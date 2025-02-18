@@ -1,10 +1,12 @@
-const mongoose = require('mongoose');
+import mongoose from "mongoose";
 
-// 定义用户上下文 Schema
+// Define the User Context Schema
 const userContextSchema = new mongoose.Schema({
-    userId: { type: String, required: true }, // 用户 ID
-    preferences: { type: Object, default: {} }, // 用户偏好或上下文参数
-}, { timestamps: true }); // 自动记录创建和更新时间
+    userId: { type: String, required: true }, // ID
+    preferences: { type: Object, default: {} }, // User preferences or contextual parameters
+}, { timestamps: true }); // Automatic log of creation and update times
 
-// 创建并导出模型
-module.exports = mongoose.model('UserContext', userContextSchema);
+// Create and export models
+const UserContext = mongoose.model('UserContext', userContextSchema);
+
+export default UserContext;

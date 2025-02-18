@@ -1,20 +1,31 @@
 //run "mongosh" at terminal first (default profile: Git Bash). 
-//run "node service.js", do not use the one under server. 
+//run "node server.js" (default profile: PowerShell), do not use the one under server. 
+//run "npm install openai (default profile: PowerShell)". 
+//to run the changes in server.js, you need to reopen VS Code and run the commands above again. 
 
-const express = require('express');
-const mongoose = require('mongoose');
-const bodyParser = require('body-parser');
-const cors = require('cors');
-const UserContext = require('./server/models/UserContext');
+import express from "express";
+import mongoose from "mongoose";
+import bodyParser from "body-parser";
+import cors from "cors";
+//Open AI_1: get Open AI in
+import OpenAI from "openai";
+import dotenv from "dotenv";
+import UserContext from "./server/models/UserContext.js";
 
-// 初始化 Express 应用
+//Open AI_1: get Open AI in
+dotenv.config();
+
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY
+});
+
+// Initialize the Express application
 const app = express();
 
-// 使用中间件
 app.use(bodyParser.json());
 app.use(cors());
 
-// 连接 MongoDB 数据库
+// Connect to a MongoDB Database
 mongoose.connect('mongodb://localhost:27017/design', {
     useNewUrlParser: true,
     useUnifiedTopology: true,
@@ -23,7 +34,7 @@ const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'MongoDB connection error:'));
 db.once('open', () => console.log('Connected to MongoDB'));
 
-// 更新用户上下文接口
+// // Update the user context interface
 app.post('/update-context', async (req, res) => {
     const { userId, input } = req.body;
 
@@ -32,20 +43,19 @@ app.post('/update-context', async (req, res) => {
     }
 
     try {
-        // 查找用户上下文，如果不存在则创建
         let userContext = await UserContext.findOne({ userId });
         if (!userContext) {
             userContext = new UserContext({ userId, preferences: {} });
         }
 
-        // 解析用户输入并更新上下文
-        const updatedPreferences = parseInputToPreferences(input, userContext.preferences);
+        //Open AI_4: added "await" below because parseInputToPreferences is now asynchronous.
+        const updatedPreferences = await parseInputToPreferences(input, userContext.preferences);
         userContext.preferences = updatedPreferences;
 
-        // 将 updatedPreferences（新生成的参数）保存到用户的数据库记录中。示例：将更新后的参数（如 {"width": 20, "height": 20, "depth": 20, "color": 0x0000ff}）存储到 MongoDB。
+        // Save the updatedPreferences (newly generated parameters) to the user's database record. Example: Store the updated parameters (e.g. {“width”: 20, “height”: 20, “depth”: 20, “color”: 0x0000ff}) to MongoDB.
         await userContext.save();
 
-        // 返回更新后的上下文, 最终将更新后的 userContext.preferences 返回给前端。
+        // Return the updated context, and eventually return the updated userContext.preferences to the frontend.
         res.json(userContext.preferences);
     } catch (error) {
         console.error('Error updating context:', error);
@@ -53,34 +63,123 @@ app.post('/update-context', async (req, res) => {
     }
 });
 
-// 解析用户输入函数
-function parseInputToPreferences(input, existingPreferences) {
+//save API
+const localSynonyms = {
+    "greater": "bigger",
+    "tighter": "smaller",
+    "crimson": "red",
+    "navy": "blue",
+    "stretch": "longer",
+    "compress": "shorter"
+};
+
+const inputCache = new Map(); // Cache
+
+//Open AI_2: use GPT to parse the user's input and convert it to standard terms before parseInputToPreferences
+async function normalizeInput(input) {
+    if (inputCache.has(input)) {
+        return inputCache.get(input); // Check the cache first
+    }
+    if (localSynonyms[input.toLowerCase()]) {
+        return localSynonyms[input.toLowerCase()]; // Look up the local dictionary then
+    }
+
+    const prompt = `Convert "${input}" into a standardized command.`;
+
+    // const prompt = `
+    // Convert the following request into a standardized command using predefined keywords:
+    // - "greater" -> "bigger"
+    // - "tighter" -> "smaller"
+    // - "crimson" -> "red"
+    // - "navy" -> "blue"
+    // - "stretch" -> "longer"
+    // - "compress" -> "shorter"
+
+    // Input: "${input}"
+    // Output: 
+    // `;
+
+    try {
+        const response = await openai.chat.completions.create({
+            model: "gpt-3.5-turbo",
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: 55,
+            temperature: 0
+        });
+
+        const parsedInput = response.choices[0].message.content.trim();
+        inputCache.set(input, parsedInput); // save into the cache
+        
+        return parsedInput; 
+    } catch (error) {
+        console.error("OpenAI API Error:", error);
+        return input;
+    }
+}
+
+//Open AI_5: Added "async" below to declare parseInputToPreferences as an async function, so the "await" in Open AI_3 can work. 
+async function parseInputToPreferences(input, existingPreferences) {
+    
+    //Open AI_3: parse the input with GPT 
+    input = await normalizeInput(input);
+    
     const parameters = { ...existingPreferences };
 
-    // 示例规则：处理“再大一点”之类的输入
-    if (input.includes('bigger')) {
-        parameters.width = (parameters.width || 1) + 10;
-        parameters.height = (parameters.height || 1) + 10;
-        parameters.depth = (parameters.depth || 1) + 10;
+    const biggerCount = (input.match(/bigger/g) || []).length;
+    if (biggerCount > 0) {
+        parameters.width = (parameters.width || 10) + biggerCount;
+        parameters.height = (parameters.height || 10) + biggerCount;
+        parameters.depth = (parameters.depth || 10) + biggerCount;
     }
 
-    // 示例规则：处理“蓝色”之类的颜色输入
+    const smallerCount = (input.match(/smaller/g) || []).length;
+    if (smallerCount > 0) {
+        parameters.width = Math.max(1, (parameters.width || 10) - smallerCount);
+        parameters.height = Math.max(1,(parameters.height || 10) - smallerCount);
+        parameters.depth = Math.max(1,(parameters.depth || 10) - smallerCount);
+    }
+
+    const muchBiggerCount = (input.match(/much bigger/g) || []).length;
+    if (muchBiggerCount > 0) {
+        parameters.width = (parameters.width || 10) + muchBiggerCount * 2;
+        parameters.height = (parameters.height || 10) + muchBiggerCount * 2;
+        parameters.depth = (parameters.depth || 10) + muchBiggerCount * 2;
+    }
+
+    const muchSmallerCount = (input.match(/much smaller/g) || []).length;
+    if (muchSmallerCount > 0) {
+        parameters.width = Math.max(1, (parameters.width || 10) - muchSmallerCount * 2);
+        parameters.height = Math.max(1, (parameters.height || 10) - muchSmallerCount * 2);
+        parameters.depth = Math.max(1, (parameters.depth || 10) - muchSmallerCount * 2);
+    }
+
+    if (input.includes('longer')) {
+        parameters.width = (parameters.width || 10) + 1;
+    }
+
+    if (input.includes('shorter')) {
+        parameters.width = Math.max(1, (parameters.width || 10) - 1);
+    }
+
     if (input.includes('blue')) {
-        parameters.color = 0x0000ff; // 蓝色
+        parameters.color = 0x0000ff; 
     }
 
-    // 你可以在这里调用更复杂的 NLP 或规则解析逻辑
+    if (input.includes('red')) {
+        parameters.color = 0xFF0000; 
+    }
+
+    if (input.includes('green')) {
+        parameters.color = 0x00FF00; 
+    }
+
     return parameters;
 }
 
-console.log(parameters);
+// console.log(parameters);
 
-
-// 测试接口
 app.get('/', (req, res) => {
     res.send('Design in Action API is running!');
 });
-
-// 启动服务器
 const PORT = 3000;
 app.listen(PORT, () => console.log(`Server is running on http://localhost:${PORT}`));
